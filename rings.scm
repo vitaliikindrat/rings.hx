@@ -16,7 +16,7 @@
 ;;   ui.virtual.indent-band.N          rest of the band: bg
 ;;   ui.virtual.indent-guide.active.N  the cursor block's guide (falls back to
 ;;                                     ui.virtual.indent-guide.active)
-;; Without bg in the theme this degrades to plain coloured lines.
+;; A theme without them gets them mixed from its rainbow (see below).
 ;;
 ;;   (require "rings/rings.scm")
 ;;   (rings-start!)
@@ -27,6 +27,8 @@
 (require "helix/misc.scm")
 (require "helix/configuration.scm")
 (require-builtin helix/core/text as text.)
+(require (prefix-in th. "helix/themes.scm"))
+(require (prefix-in hc. "helix/components.scm"))
 
 (provide rings-start!
          rings-stop!
@@ -73,6 +75,72 @@
   (if (< k *skip*)
       (make-string width #\space)
       (string-append *char* (make-string (- width 1) #\space))))
+
+;;;; colours inherited from the theme
+;;
+;; A theme that sets these scopes itself keeps them. For one that does not,
+;; they are mixed from colours it does set, again whenever the theme changes.
+;; Needs dna.hx's helix-theme.patch; looked up so this file loads without it
+;; (the scopes then stay whatever the theme says).
+
+(define (theme-api name)
+  (with-handler (lambda (_) #f)
+                (eval-string (string-append "(require-builtin helix/core/themes as th.) th." name))))
+(define th-style-exact (theme-api "theme-style-exact"))
+(define th-color-mix (theme-api "color-mix"))
+(define th-color->rgb (theme-api "color->rgb"))
+(define th-set-style! (theme-api "set-current-theme-style!"))
+(define (theme-api?)
+  (and (function? th-style-exact) (function? th-color-mix)
+       (function? th-color->rgb) (function? th-set-style!)))
+
+(define (fg-of theme scope) (hc.style->fg (th.theme-style theme scope)))
+
+;; What colours are mixed over: the theme's background, or, for a theme that
+;; leaves it to the terminal, black or white, whichever its text is not.
+(define (theme-base theme)
+  (or (hc.style->bg (th.theme-style theme "ui.background"))
+      (let* ([fg (fg-of theme "ui.text")]
+             [rgb (and fg (th-color->rgb fg))])
+        (if (and rgb
+                 (< (+ (* 299 (list-ref rgb 0)) (* 587 (list-ref rgb 1)) (* 114 (list-ref rgb 2)))
+                    128000))
+            hc.Color/White
+            hc.Color/Black))))
+
+;; Give `scope` the fraction `fg` of `color` over `base` as its text and `bg`
+;; as its background (#false leaves that side unset), unless the theme sets
+;; `scope` itself.
+(define (inherit! theme base scope color fg bg)
+  (when (and color (not (th-style-exact theme scope)))
+    (let* ([fg (and fg (th-color-mix color base fg))]
+           [bg (and bg (th-color-mix color base bg))]
+           [s (hc.style)]
+           [s (if fg (hc.style-fg s fg) s)]
+           [s (if bg (hc.style-bg s bg) s)])
+      (th-set-style! scope s))))
+
+;; The theme's rainbow (the colours of rainbow brackets, Helix's six defaults
+;; when it has none), as indent-rainbowline.nvim mixes them: 7% for the band,
+;; 30% for its guide, 80% for the guide of the cursor's block.
+(define (rainbow-length theme)
+  (let loop ([n 0])
+    (if (and (< n 64) (th-style-exact theme (string-append "rainbow." (number->string n))))
+        (loop (+ n 1))
+        n)))
+
+(define (inherit-colors!)
+  (when (theme-api?)
+    (let* ([theme (th.current-theme)]
+           [base (theme-base theme)]
+           [n (rainbow-length theme)])
+      (let loop ([k 0])
+        (when (and (> n 0) (< k *colors*))
+          (let ([c (fg-of theme (string-append "rainbow." (number->string (modulo k n))))])
+            (inherit! theme base (guide-scope k) c 0.30 0.07)
+            (inherit! theme base (band-scope k) c #f 0.07)
+            (inherit! theme base (active-scope k) c 0.80 0.07))
+          (loop (+ k 1)))))))
 
 ;;;; reading the document
 
@@ -316,7 +384,9 @@
     (set! *hooks-registered* #t)
     (register-hook 'document-changed (lambda (_doc _old) (schedule-refresh)))
     (register-hook 'document-opened (lambda (_doc) (schedule-refresh)))
-    (register-hook 'selection-did-change on-selection))
+    (register-hook 'selection-did-change on-selection)
+    (when (theme-api?) (register-hook 'theme-changed inherit-colors!)))
+  (inherit-colors!)
   (schedule-refresh))
 
 ;;@doc

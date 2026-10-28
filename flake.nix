@@ -34,7 +34,7 @@
             mkdir -p $out
             install -m644 *.scm $out/
           '';
-          # Needs a Steel helix with canopy.hx's overlays patch.
+          # Needs a Steel helix with dna.hx's overlays patch.
           passthru.cogName = "rings";
           meta = {
             description = "Rainbow indentation for Helix (Steel plugin)";

@@ -20,7 +20,7 @@ level.
 - Helix built from the Steel branch (`mattwparas/helix`,
   `steel-event-system`), see its
   [STEEL.md](https://github.com/mattwparas/helix/blob/steel-event-system/STEEL.md).
-- **The overlay API from [canopy.hx](https://github.com/vitaliikindrat/canopy.hx)
+- **The overlay API from [dna.hx](https://github.com/vitaliikindrat/dna.hx)
   (`helix-overlays.patch`) applied to that build.** Helix has no way
   for a plugin to draw styled characters at text positions, so this patch
   adds one, as a generic API rather than anything indent-specific:
@@ -33,8 +33,10 @@ level.
   - `(clear-overlays! scope)`.
 
   Both kinds follow edits and respect soft wrap and scrolling, because the
-  core does the layout. canopy.hx carries it with the other Steel plugin
+  core does the layout. dna.hx carries it with the other Steel plugin
   APIs; they apply on their own and together.
+- Optional: dna.hx's `helix-theme.patch`, for colours inherited from any
+  theme (see [Theme](#theme)).
 
 ## Install
 
@@ -47,11 +49,11 @@ forge pkg install --git https://github.com/vitaliikindrat/rings.hx.git
 With Nix, the flake exposes `packages.<system>.rings` (the cog, with
 `passthru.cogName = "rings"` for
 [helix-plugins-nix](https://github.com/maxschipper/helix-plugins-nix)); the
-patch comes from canopy.hx:
+patch comes from dna.hx:
 
 ```nix
 helix-steel.overrideAttrs (old: {
-  patches = (old.patches or [ ]) ++ [ inputs.canopy.patches.overlays ];
+  patches = (old.patches or [ ]) ++ [ inputs.dna.patches.overlays inputs.dna.patches.theme ];
 })
 ```
 
@@ -77,10 +79,16 @@ rings draws with theme scopes, `N` = 1 to the number of colours:
 | `ui.virtual.indent-band.N` | the rest of the band: `bg` |
 | `ui.virtual.indent-guide.active.N` | the guide of the cursor's block (falls back to `ui.virtual.indent-guide.active`) |
 
-Without `bg` it degrades to plain coloured lines. The screenshot uses
-indent-rainbowline's defaults (yellow, green, magenta, cyan) mixed over a
-`#111111` background: 7% for the band, 30% for the line, 80% for the active
-line.
+No theme has these, so rings inherits them: with dna.hx's theme patch it
+takes the theme's `rainbow` (the colours of rainbow brackets; Helix's six
+defaults for a theme without one) and mixes each over the theme's background,
+7% for the band, 30% for the line and 80% for the active line, again whenever
+the theme changes. A scope the theme sets itself is left alone, so a theme
+can choose its own. Without the patch, and without them in the theme, the
+guides come out in the theme's plain `ui.virtual` colour.
+
+The screenshot sets them by hand: indent-rainbowline's defaults (yellow,
+green, magenta, cyan) mixed the same way over a `#111111` background.
 
 ```toml
 "ui.virtual.indent-guide.1" = { fg = "#58581f", bg = "#222214" }
