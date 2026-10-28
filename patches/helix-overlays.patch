@@ -1,0 +1,321 @@
+diff --git a/helix-term/src/commands/engine/steel/misc.scm b/helix-term/src/commands/engine/steel/misc.scm
+index 1dca13d..a0766cb 100644
+--- a/helix-term/src/commands/engine/steel/misc.scm
++++ b/helix-term/src/commands/engine/steel/misc.scm
+@@ -268,6 +268,47 @@ (provide await-callback)
+ ;;    Function with no arguments
+ (define await-callback helix.await-callback)
+ 
++(provide set-overlays!)
++;;@doc
++;;Draw `text` over the grapheme at each char index in `positions` of the
++;;focused document, styled by the theme scope `scope`. Replaces whatever the
++;;layer named `scope` held before. Layers render in the order they were first
++;;set; where two cover the same grapheme the later layer wins. Overlays follow
++;;edits. Layout is unchanged, so `text` should be one cell wide.
++;;
++;;```scheme
++;;(set-overlays! scope text positions)
++;;```
++;;
++;;scope : string? e.g. "ui.virtual.indent-guide"
++;;text : string?
++;;positions : (listof int?) char indices
++(define set-overlays! helix.set-overlays!)
++
++(provide set-inline-annotations!)
++;;@doc
++;;Insert `text` as virtual text before each char index in `positions` of the
++;;focused document, styled by the theme scope `scope`. Unlike overlays this
++;;takes up space (the line gets wider), so it fits where there is no
++;;grapheme to draw over, such as the end of a blank line. Replaces the inline
++;;layer named `scope`; several entries may share a position and then render
++;;in order. Layers render in the order they were first set. Follows edits.
++;;
++;;```scheme
++;;(set-inline-annotations! scope text positions)
++;;```
++(define set-inline-annotations! helix.set-inline-annotations!)
++
++(provide clear-overlays!)
++;;@doc
++;;Remove the overlay layer and the inline layer `scope` from the focused document.
++;;
++;;```scheme
++;;(clear-overlays! scope)
++;;```
++(define clear-overlays! helix.clear-overlays!)
++
++
+ (provide add-inlay-hint)
+ ;;@doc
+ ;;
+diff --git a/helix-term/src/commands/engine/steel/mod.rs b/helix-term/src/commands/engine/steel/mod.rs
+index e017874..46d2730 100644
+--- a/helix-term/src/commands/engine/steel/mod.rs
++++ b/helix-term/src/commands/engine/steel/mod.rs
+@@ -4077,6 +4077,9 @@ fn load_misc_api(engine: &mut Engine, generate_sources: bool) {
+             send_arbitrary_lsp_notification,
+         )
+         .register_fn_with_ctx(CTX, "lsp-reply-ok", lsp_reply_ok)
++        .register_fn_with_ctx(CTX, "set-overlays!", set_overlays)
++        .register_fn_with_ctx(CTX, "set-inline-annotations!", set_inline_annotations)
++        .register_fn_with_ctx(CTX, "clear-overlays!", clear_overlays)
+         .register_fn("acquire-context-lock", acquire_context_lock)
+         .register_fn_with_ctx(
+             CTX,
+@@ -5694,6 +5697,35 @@ pub fn remove_inlay_hint(cx: &mut Context, char_index: usize, _completion: Steel
+     true
+ }
+ 
++// "set-overlays!": replace the focused document's overlay layer `scope` with
++// `text` drawn over the grapheme at each char index in `positions`.
++pub fn set_overlays(cx: &mut Context, scope: SteelString, text: SteelString, positions: Vec<usize>) {
++    let (_, doc) = current!(cx.editor);
++    let len = doc.text().len_chars();
++    let positions = positions.into_iter().filter(|&p| p < len).collect();
++    doc.plugin_overlays.set(scope.as_str(), text.as_str(), positions);
++}
++
++// "set-inline-annotations!": replace the focused document's inline layer
++// `scope` with `text` inserted before each char index in `positions`.
++pub fn set_inline_annotations(
++    cx: &mut Context,
++    scope: SteelString,
++    text: SteelString,
++    positions: Vec<usize>,
++) {
++    let (_, doc) = current!(cx.editor);
++    let len = doc.text().len_chars();
++    let positions = positions.into_iter().filter(|&p| p <= len).collect();
++    doc.plugin_overlays.set_inline(scope.as_str(), text.as_str(), positions);
++}
++
++// "clear-overlays!": drop the focused document's overlay layer `scope`.
++pub fn clear_overlays(cx: &mut Context, scope: SteelString) {
++    let (_, doc) = current!(cx.editor);
++    doc.plugin_overlays.clear(scope.as_str());
++}
++
+ pub fn insert_string(cx: &mut Context, string: SteelString) {
+     let (view, doc) = current!(cx.editor);
+ 
+diff --git a/helix-view/src/document.rs b/helix-view/src/document.rs
+index 17d4002..b9dd763 100644
+--- a/helix-view/src/document.rs
++++ b/helix-view/src/document.rs
+@@ -16,6 +16,7 @@
+ use helix_lsp::util::lsp_pos_to_pos;
+ use helix_stdx::faccess::{copy_metadata, readonly};
+ use helix_vcs::{DiffHandle, DiffProviderRegistry};
++use crate::overlays::PluginOverlays;
+ use once_cell::sync::OnceCell;
+ use thiserror;
+ 
+@@ -155,6 +156,8 @@ pub struct Document {
+     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
+     /// LSP code action hints for each view.
+     pub(crate) code_action_hints: HashSet<ViewId>,
++    /// Grapheme overlays and inline text added by plugins, one layer per theme scope.
++    pub plugin_overlays: PluginOverlays,
+     /// Set to `true` when the document is updated, reset to `false` on the next inlay hints
+     /// update from the LSP
+     pub inlay_hints_oudated: bool,
+@@ -773,6 +776,7 @@ pub fn from(
+             jump_labels: HashMap::new(),
+             document_highlights: HashMap::new(),
+             code_action_hints: HashSet::new(),
++            plugin_overlays: PluginOverlays::default(),
+             color_swatches: None,
+             document_links: Vec::new(),
+             color_swatch_controller: TaskController::new(),
+@@ -1590,6 +1594,7 @@ fn apply_impl(
+             );
+         };
+ 
++        self.plugin_overlays.map_changes(changes);
+         self.inlay_hints_oudated = true;
+         for text_annotation in self.inlay_hints.values_mut() {
+             let DocumentInlayHints {
+diff --git a/helix-view/src/lib.rs b/helix-view/src/lib.rs
+index 38ca8ae..20b7dd4 100644
+--- a/helix-view/src/lib.rs
++++ b/helix-view/src/lib.rs
+@@ -17,6 +17,7 @@
+ pub mod register;
+ pub mod theme;
+ pub mod tree;
++pub mod overlays;
+ pub mod view;
+ 
+ pub mod extension;
+diff --git a/helix-view/src/overlays.rs b/helix-view/src/overlays.rs
+new file mode 100644
+index 0000000..17b7f09
+--- /dev/null
++++ b/helix-view/src/overlays.rs
+@@ -0,0 +1,142 @@
++//! Plugin-provided grapheme overlays: a plugin replaces the rendered grapheme
++//! at chosen char indices with its own text, styled by a theme scope. This is
++//! the mechanism jump labels use, exposed per scope so a plugin owns whole
++//! layers (e.g. one layer per indent-guide colour). Overlays are anchored by
++//! char index and follow edits.
++//!
++//! Inline layers are the same idea for virtual text *inserted* before a char
++//! index (what inlay hints use), styled by scope: they take up space, so they
++//! suit places with no grapheme to overlay, like the end of a blank line.
++
++use helix_core::text_annotations::{InlineAnnotation, Overlay};
++use helix_core::{Assoc, ChangeSet};
++
++#[derive(Debug, Default, Clone)]
++pub struct PluginOverlays {
++    /// (theme scope, overlays sorted by char_idx). Layers render in this
++    /// order and a later layer wins where two cover the same grapheme; a
++    /// scope keeps its slot when it is replaced.
++    layers: Vec<(String, Vec<Overlay>)>,
++    /// (theme scope, inline annotations sorted by char_idx), same ordering rules.
++    inline: Vec<(String, Vec<InlineAnnotation>)>,
++}
++
++impl PluginOverlays {
++    pub fn is_empty(&self) -> bool {
++        self.layers.iter().all(|(_, overlays)| overlays.is_empty())
++            && self.inline.iter().all(|(_, annotations)| annotations.is_empty())
++    }
++
++    pub fn layers(&self) -> impl Iterator<Item = (&str, &[Overlay])> {
++        self.layers
++            .iter()
++            .map(|(scope, overlays)| (scope.as_str(), overlays.as_slice()))
++    }
++
++    pub fn inline_layers(&self) -> impl Iterator<Item = (&str, &[InlineAnnotation])> {
++        self.inline
++            .iter()
++            .map(|(scope, annotations)| (scope.as_str(), annotations.as_slice()))
++    }
++
++    /// Replace the inline layer for `scope` with `text` inserted before each of
++    /// `positions`.
++    pub fn set_inline(&mut self, scope: &str, text: &str, mut positions: Vec<usize>) {
++        positions.sort_unstable();
++        let annotations = positions
++            .into_iter()
++            .map(|char_idx| InlineAnnotation::new(char_idx, text))
++            .collect();
++        match self.inline.iter_mut().find(|(s, _)| s == scope) {
++            Some((_, layer)) => *layer = annotations,
++            None => self.inline.push((scope.to_string(), annotations)),
++        }
++    }
++
++    /// Replace the layer for `scope` with `text` drawn at each of `positions`.
++    pub fn set(&mut self, scope: &str, text: &str, mut positions: Vec<usize>) {
++        positions.sort_unstable();
++        positions.dedup();
++        let overlays = positions
++            .into_iter()
++            .map(|char_idx| Overlay::new(char_idx, text))
++            .collect();
++        match self.layers.iter_mut().find(|(s, _)| s == scope) {
++            Some((_, layer)) => *layer = overlays,
++            None => self.layers.push((scope.to_string(), overlays)),
++        }
++    }
++
++    /// Drop both the overlay and the inline layer named `scope`.
++    pub fn clear(&mut self, scope: &str) {
++        self.layers.retain(|(s, _)| s != scope);
++        self.inline.retain(|(s, _)| s != scope);
++    }
++
++    pub fn clear_all(&mut self) {
++        self.layers.clear();
++        self.inline.clear();
++    }
++
++    pub fn map_changes(&mut self, changes: &ChangeSet) {
++        for (_, overlays) in &mut self.layers {
++            changes.update_positions(
++                overlays
++                    .iter_mut()
++                    .map(|overlay| (&mut overlay.char_idx, Assoc::After)),
++            );
++        }
++        for (_, annotations) in &mut self.inline {
++            changes.update_positions(
++                annotations
++                    .iter_mut()
++                    .map(|annotation| (&mut annotation.char_idx, Assoc::After)),
++            );
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use helix_core::{Rope, Selection, Transaction};
++
++    #[test]
++    fn layers_keep_their_slot_and_sort() {
++        let mut o = PluginOverlays::default();
++        o.set("a", "|", vec![5, 1, 5, 3]);
++        o.set("b", "|", vec![2]);
++        o.set("a", "!", vec![9]);
++        let layers: Vec<_> = o
++            .layers()
++            .map(|(s, l)| (s.to_string(), l.iter().map(|x| x.char_idx).collect::<Vec<_>>()))
++            .collect();
++        assert_eq!(layers, vec![("a".into(), vec![9]), ("b".into(), vec![2])]);
++        o.clear("a");
++        assert_eq!(o.layers().count(), 1);
++        o.clear_all();
++        assert!(o.is_empty());
++    }
++
++    #[test]
++    fn inline_layers_are_separate_and_cleared_with_their_scope() {
++        let mut o = PluginOverlays::default();
++        o.set("a", "|", vec![1]);
++        o.set_inline("a", "| ", vec![4, 4, 2]);
++        let inline: Vec<_> = o.inline_layers().map(|(_, l)| l.iter().map(|x| x.char_idx).collect::<Vec<_>>()).collect();
++        // duplicates are kept: several annotations may share a position
++        assert_eq!(inline, vec![vec![2, 4, 4]]);
++        o.clear("a");
++        assert!(o.is_empty());
++    }
++
++    #[test]
++    fn overlays_follow_edits() {
++        let rope = Rope::from("ab\n  cd\n");
++        let mut o = PluginOverlays::default();
++        o.set("g", "|", vec![3]);
++        let t = Transaction::insert(&rope, &Selection::point(0), "NEW\n".into());
++        o.map_changes(t.changes());
++        assert_eq!(o.layers().next().unwrap().1[0].char_idx, 7);
++    }
++}
+diff --git a/helix-view/src/view.rs b/helix-view/src/view.rs
+index d211d8e..5de28dc 100644
+--- a/helix-view/src/view.rs
++++ b/helix-view/src/view.rs
+@@ -462,6 +462,17 @@ pub fn text_annotations<'a>(
+     ) -> TextAnnotations<'a> {
+         let mut text_annotations = TextAnnotations::default();
+ 
++        // Plugin overlays first: for overlays the last layer added wins, so
++        // jump labels (added next) stay visible on top of them.
++        for (scope, overlays) in doc.plugin_overlays.layers() {
++            let style = theme.and_then(|t| t.find_highlight(scope));
++            text_annotations.add_overlay(overlays, style);
++        }
++        for (scope, annotations) in doc.plugin_overlays.inline_layers() {
++            let style = theme.and_then(|t| t.find_highlight(scope));
++            text_annotations.add_inline_annotations(annotations, style);
++        }
++
+         if let Some(labels) = doc.jump_labels.get(&self.id) {
+             let style = theme.and_then(|t| t.find_highlight("ui.virtual.jump-label"));
+             text_annotations.add_overlay(labels, style);
