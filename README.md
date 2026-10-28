@@ -20,7 +20,8 @@ level.
 - Helix built from the Steel branch (`mattwparas/helix`,
   `steel-event-system`), see its
   [STEEL.md](https://github.com/mattwparas/helix/blob/steel-event-system/STEEL.md).
-- **`patches/helix-overlays.patch` applied to that build.** Helix has no way
+- **The overlay API from [canopy.hx](https://github.com/vitaliikindrat/canopy.hx)
+  (`helix-overlays.patch`) applied to that build.** Helix has no way
   for a plugin to draw styled characters at text positions, so this patch
   adds one, as a generic API rather than anything indent-specific:
   - `(set-overlays! scope text positions)` draws `text` over the grapheme at
@@ -32,9 +33,8 @@ level.
   - `(clear-overlays! scope)`.
 
   Both kinds follow edits and respect soft wrap and scrolling, because the
-  core does the layout. About 230 additive lines, against `424add1` of the
-  Steel branch; it applies on its own and in either order with
-  [mokh.hx](https://github.com/vitaliikindrat/mokh.hx)'s virtual-text patch.
+  core does the layout. canopy.hx carries it with the other Steel plugin
+  APIs; they apply on their own and together.
 
 ## Install
 
@@ -46,12 +46,12 @@ forge pkg install --git https://github.com/vitaliikindrat/rings.hx.git
 
 With Nix, the flake exposes `packages.<system>.rings` (the cog, with
 `passthru.cogName = "rings"` for
-[helix-plugins-nix](https://github.com/maxschipper/helix-plugins-nix)) and
-`patches.helix-overlays` to add to your Steel helix derivation:
+[helix-plugins-nix](https://github.com/maxschipper/helix-plugins-nix)); the
+patch comes from canopy.hx:
 
 ```nix
 helix-steel.overrideAttrs (old: {
-  patches = (old.patches or [ ]) ++ [ inputs.rings.patches.helix-overlays ];
+  patches = (old.patches or [ ]) ++ [ inputs.canopy.patches.overlays ];
 })
 ```
 

@@ -16,12 +16,6 @@
       version = "0.1.0";
     in
     {
-      # The patch a Steel helix build needs for this plugin (adds the
-      # set-overlays! / set-inline-annotations! / clear-overlays! API).
-      # Against mattwparas/helix steel-event-system; applies on its own and
-      # in either order with mokh.hx's virtual-text patch.
-      patches.helix-overlays = ./patches/helix-overlays.patch;
-
       packages = forAll (pkgs: rec {
         # The cog, laid out the way helix-plugins-nix and forge expect;
         # `passthru.cogName` lets helix-plugins-nix's module install it.
@@ -40,10 +34,8 @@
             mkdir -p $out
             install -m644 *.scm $out/
           '';
-          passthru = {
-            cogName = "rings";
-            helixPatch = ./patches/helix-overlays.patch;
-          };
+          # Needs a Steel helix with canopy.hx's overlays patch.
+          passthru.cogName = "rings";
           meta = {
             description = "Rainbow indentation for Helix (Steel plugin)";
             homepage = "https://github.com/vitaliikindrat/rings.hx";
